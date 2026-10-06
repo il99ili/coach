@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>متابعة المتدربات</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Noto+Kufi+Arabic:wght@700;800&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app" dir="rtl" lang="ar">
+  <header class="intro">
+    <h1>متابعة المتدربات</h1>
+    <p id="introText">ادخلي بالرمز السري عشان تشوفين إجابات المتدربات والبنود اللي ما يعرفونها.</p>
+  </header>
+
+  <form class="who gate" id="login" novalidate>
+    <label for="adminKey">الرمز السري</label>
+    <input id="adminKey" type="password" autocomplete="current-password" placeholder="الرمز اللي حطيتيه في Code.gs">
+    <button class="btn" type="submit">دخول</button>
+    <p class="status" id="loginMsg" role="status"></p>
+  </form>
+
+  <section class="view" id="dash" hidden aria-label="إجابات المتدربات">
+    <div class="toolbar">
+      <input class="search" id="search" type="search" placeholder="ابحثي باسم المتدربة" aria-label="بحث بالاسم">
+      <button class="reset small" id="refresh" type="button">تحديث</button>
+      <button class="reset small" id="logout" type="button">خروج</button>
+    </div>
+    <p class="updated" id="updated" style="margin:0;color:var(--muted);font-size:14px"></p>
+    <div id="dashBody"></div>
+  </section>
+</div>
+
+<script src="config.js"></script>
+<script src="data.js"></script>
+<script>
+(function () {
+  var API = (window.APP_CONFIG && window.APP_CONFIG.API_URL) || "";
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function pct(n, d) { return d ? Math.round((n / d) * 100) : 0; }
+  function fmtDate(t) {
+    try { return new Date(t).toLocaleString("ar-SA-u-nu-latn", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }); } catch (e) { return ""; }
+  }
+  function bar(p, cls) {
+    var b = el("div", "bar" + (cls ? " " + cls : ""));
+    var i = document.createElement("i");
+    i.style.setProperty("--w", p + "%");
+    b.appendChild(i);
+    return b;
+  }
+
+  var key = "", rows = [], timer = null, loading = false;
+  try { key = sessionStorage.getItem("driving-admin-key") || ""; } catch (e) {}
+
+  function loadRows(done) {
+    if (loading) return;
+    loading = true;
+    fetch(API + "?action=list&key=" + encodeURIComponent(key) + "&_=" + Date.now())
+      .then(function (r) { return r.json(); })
+      .then(function (j) { loading = false; done(j); })
+      .catch(function () { loading = false; done(null); });
+  }
+
+  function enter(k, fromLogin) {
+    if (!API) {
+      $("loginMsg").textContent = "رابط Google Apps Script ما انحط في ملف config.js. شوفي خطوات README.";
+      return;
+    }
+    key = k;
+    $("loginMsg").textContent = "جاري التحقق…";
+    loadRows(function (j) {
+      if (!j) { $("loginMsg").textContent = "ما قدرت أتصل. تأكدي من الإنترنت ورابط config.js."; if (!fromLogin) showLogin(); return; }
+      if (!j.ok) {
+        $("loginMsg").textContent = j.error === "key" ? "الرمز السري غلط." : "صار خطأ في الاتصال بالجدول.";
+        showLogin();
+        return;
+      }
+      try { sessionStorage.setItem("driving-admin-key", key); } catch (e) {}
+      rows = j.rows || [];
+      $("login").hidden = true;
+      $("dash").hidden = false;
+      $("introText").textContent = "إجابات المتدربات والبنود اللي ما علّمن عليها. تتحدث كل نصف دقيقة.";
+      render();
+      clearInterval(timer);
+      timer = setInterval(refresh, 30000);
+    });
+  }
+  function showLogin() {
+    $("login").hidden = false;
+    $("dash").hidden = true;
+    clearInterval(timer);
+  }
+  function refresh() {
+    loadRows(function (j) {
+      if (j && j.ok) { rows = j.rows || []; render(); }
+      else if (j && j.error === "key") { showLogin(); $("loginMsg").textContent = "الرمز السري تغيّر. ادخلي من جديد."; }
+    });
+  }
+
+  function render() {
+    var body = $("dashBody");
+    body.textContent = "";
+    $("updated").textContent = "آخر تحديث للصفحة: " + fmtDate(Date.now());
+    var q = $("search").value.trim().toLowerCase();
+    var all = rows.filter(function (r) { return r && r.name; });
+    if (!all.length) {
+      var c0 = el("div", "card");
+      c0.appendChild(el("h2", null, "ما وصلك أحد للحين"));
+      c0.appendChild(el("p", "empty", "أرسلي رابط صفحة المتدربات (index.html). أول ما وحدة تكتب اسمها وتعلّم تظهر هنا."));
+      body.appendChild(c0);
+      return;
+    }
+    all.sort(function (a, b) { return (b.t || 0) - (a.t || 0); });
+    all.forEach(function (r) {
+      var c = r.c || {};
+      r.done = 0;
+      Object.keys(ITEMS).forEach(function (sid) { ITEMS[sid].forEach(function (i) { if (c[i.id]) r.done++; }); });
+    });
+
+    var sum = 0;
+    all.forEach(function (r) { sum += pct(r.done, TOTAL); });
+    var s1 = el("p", "dash-sum");
+    var a = el("span"); a.appendChild(el("strong", null, String(all.length))); a.appendChild(document.createTextNode(" متدربة"));
+    var b2 = el("span"); b2.appendChild(el("strong", null, Math.round(sum / all.length) + "%")); b2.appendChild(document.createTextNode(" متوسط البنود اللي يعرفنها"));
+    s1.appendChild(a); s1.appendChild(b2);
+    body.appendChild(s1);
+
+    /* أكثر البنود ناقصة */
+    var missCount = {};
+    all.forEach(function (r) {
+      Object.keys(ITEMS).forEach(function (sid) {
+        ITEMS[sid].forEach(function (i) { if (!(r.c && r.c[i.id])) missCount[i.id] = (missCount[i.id] || 0) + 1; });
+      });
+    });
+    var flat = [];
+    Object.keys(ITEMS).forEach(function (sid) { ITEMS[sid].forEach(function (i) { if (missCount[i.id]) flat.push({ item: i, n: missCount[i.id] }); }); });
+    flat.sort(function (x, y) { return y.n - x.n; });
+    var gapCard = el("div", "card");
+    gapCard.appendChild(el("h2", null, "أكثر البنود اللي ما يعرفونها"));
+    if (!flat.length) {
+      gapCard.appendChild(el("p", "empty", "كل المتدربات علّمن على كل البنود."));
+    } else {
+      var ul = el("ul", "gaps");
+      flat.slice(0, 10).forEach(function (g) {
+        var li = el("li", SHEET_BY_ID[g.item.sheet].cls);
+        var tp = el("div", "gap-top");
+        var left = el("span"); left.appendChild(document.createElement("i")); left.appendChild(document.createTextNode(SHEET_BY_ID[g.item.sheet].title + " · " + g.item.label));
+        tp.appendChild(left);
+        tp.appendChild(el("span", "num", g.n + " من " + all.length));
+        li.appendChild(tp);
+        li.appendChild(bar(pct(g.n, all.length)));
+        ul.appendChild(li);
+      });
+      gapCard.appendChild(ul);
+    }
+    body.appendChild(gapCard);
+
+    /* كل متدربة: الناقص بس */
+    var list = all.filter(function (r) { return !q || r.name.toLowerCase().indexOf(q) !== -1; });
+    var wrap = el("div", "trainees");
+    if (!list.length) wrap.appendChild(el("p", "empty", "ما فيه متدربة بهذا الاسم."));
+    list.forEach(function (r) {
+      var c = r.c || {}, n = r.n || {};
+      var det = el("details", "tr");
+      var sm = el("summary");
+      var top1 = el("div", "tr-top");
+      top1.appendChild(el("span", "tr-name", r.name));
+      top1.appendChild(el("span", "num", "ناقص " + (TOTAL - r.done) + " من " + TOTAL + (r.t ? " · " + fmtDate(r.t) : "")));
+      sm.appendChild(top1);
+      sm.appendChild(bar(pct(r.done, TOTAL), "slate"));
+      det.appendChild(sm);
+
+      var bd = el("div", "tr-body");
+      SHEETS.forEach(function (s) {
+        var items = ITEMS[s.id];
+        var miss = items.filter(function (i) { return !c[i.id]; });
+        var blk = el("div", s.cls);
+        var hd = el("div", "sh-head");
+        var l = el("span"); l.appendChild(document.createElement("i")); l.appendChild(document.createTextNode(s.title));
+        hd.appendChild(l);
+        hd.appendChild(el("span", "num", miss.length ? "ناقص " + miss.length : "كامل"));
+        blk.appendChild(hd);
+        if (miss.length) {
+          var m = el("div", "miss");
+          miss.forEach(function (i) { m.appendChild(el("span", null, i.label)); });
+          blk.appendChild(m);
+        }
+        if (n["notes-" + s.id]) blk.appendChild(el("p", "tr-note", n["notes-" + s.id]));
+        bd.appendChild(blk);
+      });
+      det.appendChild(bd);
+      wrap.appendChild(det);
+    });
+    body.appendChild(wrap);
+  }
+
+  $("login").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var k = $("adminKey").value.trim();
+    if (!k) { $("loginMsg").textContent = "اكتبي الرمز السري."; return; }
+    enter(k, true);
+  });
+  $("search").addEventListener("input", render);
+  $("refresh").addEventListener("click", refresh);
+  $("logout").addEventListener("click", function () {
+    try { sessionStorage.removeItem("driving-admin-key"); } catch (e) {}
+    key = "";
+    $("adminKey").value = "";
+    $("loginMsg").textContent = "";
+    showLogin();
+  });
+
+  if (key) enter(key, false);
+})();
+</script>
+</body>
+</html>

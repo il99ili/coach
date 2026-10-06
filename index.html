@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>قوائم تقييم القيادة</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Noto+Kufi+Arabic:wght@700;800&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app" dir="rtl" lang="ar">
+  <header class="intro">
+    <h1>قوائم تقييم القيادة</h1>
+    <p>اكتبي اسمك واضغطي «دخول»، وبعدها علّمي على كل بند تتقنينه. البنود اللي بدون علامة تُحسب ناقصة وتوصل المدربة.</p>
+  </header>
+
+  <section class="view" aria-label="النموذج">
+    <form class="who gate" id="gate" novalidate>
+      <label for="traineeName">اسمك</label>
+      <input id="traineeName" type="text" autocomplete="name" placeholder="اكتبي اسمك هنا" maxlength="60">
+      <button class="btn" type="submit">دخول</button>
+      <p class="status" id="gateMsg" role="status">اكتبي اسمك ثم اضغطي «دخول» وتظهر لك الأسئلة.</p>
+    </form>
+
+    <div class="view" id="formBody" hidden>
+      <div class="who">
+        <div class="who-row">
+          <span>الاسم: <strong id="whoName"></strong></span>
+          <button class="reset small" id="changeName" type="button">تغيير الاسم</button>
+        </div>
+        <p class="status" id="status" role="status"></p>
+      </div>
+      <nav class="nav" aria-label="الصفحات"><div class="nav-row" id="navRow"></div></nav>
+      <main class="sheets" id="sheets"></main>
+      <div class="foot">
+        <div class="foot-row">
+          <button class="btn" id="copyBtn" type="button">نسخ نتيجتي</button>
+          <button class="reset" id="resetBtn" type="button">مسح علاماتي</button>
+        </div>
+        <textarea class="copybox" id="copyBox" readonly hidden aria-label="النتيجة جاهزة للنسخ"></textarea>
+        <p class="status" id="copyMsg" role="status"></p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="config.js"></script>
+<script src="data.js"></script>
+<script>
+(function () {
+  var API = (window.APP_CONFIG && window.APP_CONFIG.API_URL) || "";
+  function $(id) { return document.getElementById(id); }
+
+  /* ---------- الحالة (تنحفظ في الجهاز) ---------- */
+  var KEY = "driving-eval-site-v1";
+  var state = { name: "", c: {}, n: {} };
+  try {
+    var raw = localStorage.getItem(KEY);
+    if (raw) { var p = JSON.parse(raw); if (p && p.c && p.n) state = { name: p.name || "", c: p.c, n: p.n }; }
+  } catch (e) {}
+  function saveLocal() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
+
+  /* ---------- بناء النموذج ---------- */
+  var navHtml = "", html = "";
+  SHEETS.forEach(function (s) {
+    navHtml += '<a class="chip ' + s.cls + '" href="#' + s.id + '"><i></i>' + s.title + "</a>";
+    html += '<section class="sheet ' + s.cls + '" id="' + s.id + '" aria-labelledby="h-' + s.id + '">';
+    html += '<div class="plaque"><h2 id="h-' + s.id + '">' + s.title + '</h2><span class="count" dir="ltr" id="cnt-' + s.id + '"></span></div>';
+    html += '<div class="groups">';
+    s.groups.forEach(function (g, gi) {
+      html += '<div class="group"><h3 class="glabel">' + g.t + "</h3>";
+      if (g.blank) {
+        for (var b = 0; b < g.blank; b++) {
+          var bid = s.id + "-g" + gi + "-b" + b;
+          html += '<label class="item blank"><input type="checkbox" data-id="' + bid + '" id="c-' + bid + '"><span class="box"></span>' +
+                  '<input class="write" type="text" data-note="' + bid + '" id="w-' + bid + '" aria-label="بند فارغ ' + (b + 1) + '"></label>';
+        }
+      } else {
+        g.items.forEach(function (it, ii) {
+          var id = s.id + "-g" + gi + "-i" + ii;
+          html += '<label class="item"><input type="checkbox" data-id="' + id + '" id="c-' + id + '"><span class="box"></span><span class="txt">' + it + "</span></label>";
+        });
+      }
+      html += "</div>";
+    });
+    html += "</div>";
+    html += '<div class="notes"><label for="n-' + s.id + '">ملاحظات</label><textarea id="n-' + s.id + '" data-note="notes-' + s.id + '" rows="4"></textarea></div>';
+    html += "</section>";
+  });
+  $("navRow").innerHTML = navHtml;
+  $("sheets").innerHTML = html;
+
+  function refreshCounts() {
+    SHEETS.forEach(function (s) {
+      var list = ITEMS[s.id], done = 0;
+      list.forEach(function (i) { if (state.c[i.id]) done++; });
+      $("cnt-" + s.id).textContent = done + " / " + list.length;
+    });
+  }
+  function restoreUI() {
+    $("traineeName").value = state.name || "";
+    $("sheets").querySelectorAll('input[type="checkbox"]').forEach(function (c) { c.checked = !!state.c[c.getAttribute("data-id")]; });
+    $("sheets").querySelectorAll("[data-note]").forEach(function (f) { f.value = state.n[f.getAttribute("data-note")] || ""; });
+    refreshCounts();
+  }
+
+  /* ---------- ملخص نصي (للإرسال والنسخ) ---------- */
+  function summaryText() {
+    var lines = ["تقييم القيادة", "الاسم: " + (state.name.trim() || "—")];
+    SHEETS.forEach(function (s) {
+      var list = ITEMS[s.id];
+      var done = list.filter(function (i) { return state.c[i.id]; }).length;
+      var miss = list.filter(function (i) { return !state.c[i.id]; }).map(function (i) { return i.label; });
+      lines.push("");
+      lines.push(s.title + ": " + done + "/" + list.length);
+      lines.push(miss.length ? "الناقص: " + miss.join("، ") : "كامل");
+      var nt = state.n["notes-" + s.id];
+      if (nt) lines.push("ملاحظات: " + nt);
+    });
+    return lines.join("\n");
+  }
+
+  /* ---------- الحفظ عند المدربة ---------- */
+  var saving = false, dirty = false, timer = null, retries = 0;
+
+  function setStatus(msg, isErr) {
+    var s = $("status");
+    s.textContent = msg;
+    s.className = "status" + (isErr ? " err" : "");
+  }
+  function changed() {
+    saveLocal();
+    if (!API) { setStatus("إجاباتك محفوظة في هذا الجهاز فقط. اضغطي «نسخ نتيجتي» تحت وأرسليها للمدربة.", true); return; }
+    if (!state.name.trim()) return;
+    dirty = true;
+    retries = 0;
+    setStatus("جاري الحفظ…");
+    clearTimeout(timer);
+    timer = setTimeout(flush, 800);
+  }
+  function fail() {
+    saving = false;
+    dirty = true;
+    if (retries < 3) {
+      retries++;
+      setStatus("ما انحفظت، أعيد المحاولة…", true);
+      clearTimeout(timer);
+      timer = setTimeout(flush, 6000);
+    } else {
+      setStatus("ما انحفظت إجاباتك عند المدربة. تأكدي من الإنترنت، أو اضغطي «نسخ نتيجتي» وأرسليها لها.", true);
+    }
+  }
+  function flush() {
+    if (saving || !dirty) return;
+    saving = true;
+    dirty = false;
+    var body = JSON.stringify({ name: state.name.trim(), c: state.c, n: state.n, t: Date.now(), summary: summaryText() });
+    fetch(API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: body })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) { fail(); return; }
+        saving = false;
+        retries = 0;
+        if (dirty) { flush(); return; }
+        setStatus("تم الحفظ. المدربة تشوف إجاباتك.");
+      })
+      .catch(fail);
+  }
+
+  /* ---------- الدخول بالاسم ---------- */
+  function showGate(show) {
+    $("gate").hidden = !show;
+    $("formBody").hidden = show;
+    if (!show) $("whoName").textContent = state.name.trim() || "—";
+  }
+  $("gate").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var v = $("traineeName").value.trim();
+    if (!v) {
+      $("gateMsg").textContent = "اكتبي اسمك أول عشان تدخلين.";
+      $("traineeName").focus();
+      return;
+    }
+    state.name = v;
+    saveLocal();
+    showGate(false);
+    window.scrollTo(0, 0);
+    if (!API) setStatus("إجاباتك محفوظة في هذا الجهاز فقط. اضغطي «نسخ نتيجتي» تحت وأرسليها للمدربة.", true);
+    else setStatus("علّمي على البنود وتنحفظ تلقائي.");
+    if (API && (Object.keys(state.c).length || Object.keys(state.n).length)) changed();
+  });
+  $("changeName").addEventListener("click", function () {
+    $("traineeName").value = state.name;
+    showGate(true);
+    $("traineeName").focus();
+  });
+
+  /* ---------- التفاعل ---------- */
+  $("sheets").addEventListener("change", function (e) {
+    var t = e.target;
+    if (t.type === "checkbox") {
+      var id = t.getAttribute("data-id");
+      if (t.checked) state.c[id] = 1; else delete state.c[id];
+      refreshCounts(); changed();
+    }
+  });
+  $("sheets").addEventListener("input", function (e) {
+    var t = e.target, k = t.getAttribute("data-note");
+    if (k) { if (t.value) state.n[k] = t.value; else delete state.n[k]; changed(); }
+  });
+
+  var resetBtn = $("resetBtn"), resetTimer = null;
+  function disarm() { resetBtn.classList.remove("armed"); resetBtn.textContent = "مسح علاماتي"; }
+  resetBtn.addEventListener("click", function () {
+    if (!resetBtn.classList.contains("armed")) {
+      resetBtn.classList.add("armed");
+      resetBtn.textContent = "اضغطي مرة ثانية للتأكيد";
+      resetTimer = setTimeout(disarm, 4000);
+      return;
+    }
+    clearTimeout(resetTimer);
+    state = { name: state.name, c: {}, n: {} };
+    restoreUI(); disarm(); changed();
+  });
+
+  $("copyBtn").addEventListener("click", function () {
+    var text = summaryText(), box = $("copyBox"), msg = $("copyMsg");
+    function manual() {
+      box.hidden = false;
+      box.value = text;
+      box.focus();
+      box.select();
+      msg.textContent = "ما انتسخت تلقائي. النص محدد، انسخيه يدوي وأرسليه للمدربة.";
+    }
+    try {
+      navigator.clipboard.writeText(text).then(function () {
+        box.hidden = true;
+        msg.textContent = "انتسخت النتيجة. الصقيها في رسالة للمدربة.";
+      }, manual);
+    } catch (e) { manual(); }
+  });
+
+  /* ---------- البداية ---------- */
+  restoreUI();
+  showGate(!state.name.trim());
+  if (state.name.trim()) {
+    if (!API) setStatus("إجاباتك محفوظة في هذا الجهاز فقط. اضغطي «نسخ نتيجتي» تحت وأرسليها للمدربة.", true);
+    else setStatus("علّمي على البنود وتنحفظ تلقائي.");
+  }
+})();
+</script>
+</body>
+</html>
